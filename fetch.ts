@@ -6,16 +6,18 @@ import {
   H3Config,
   H3Connection,
   generateCid,
-  nwepAndH3Alpn,
+  nwepAlpn,
   PROTOCOL_VERSION,
   type Header,
 } from '@webprotocol/nwep';
 import { isNapiError } from './napi-helpers.js';
 
+export type NwepMethod = 'READ' | 'WRITE' | 'MODIFY' | 'DELETE' | 'PROBE' | 'TRACE';
+
 export interface FetchOptions {
-  method?: string;
+  method?: NwepMethod;
   headers?: Record<string, string>;
-  body?: Buffer | string;
+  body?: string | object;
 }
 
 export interface FetchResponse {
@@ -23,13 +25,15 @@ export interface FetchResponse {
   statusText: string;
   headers: Map<string, string>;
   body: Buffer;
+  text(): string;
+  json<T = any>(): T;
 }
 
 export async function fetch(url: string, options: FetchOptions = {}): Promise<FetchResponse> {
   const parsedUrl = new URL(url);
 
   if (parsedUrl.protocol !== 'web:') {
-    throw new Error(`Unsupported protocol: ${parsedUrl.protocol}. Use web://`);
+    throw new Error(`only web:// protocol is supported (got ${parsedUrl.protocol})`);
   }
 
   let host = parsedUrl.hostname;
@@ -40,7 +44,7 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
 
   const port = parsedUrl.port ? parseInt(parsedUrl.port) : 443;
   const path = parsedUrl.pathname + parsedUrl.search;
-  const method = options.method || 'GET';
+  const method = options.method || 'READ';
 
   const isIPv6 = host.includes(':');
 
@@ -97,6 +101,14 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
             { name: Buffer.from('user-agent'), value: Buffer.from('webfetch/1.0') },
           ];
 
+          // auto set content-type for json bodies
+          if (options.body && typeof options.body === 'object' && !options.headers?.['content-type']) {
+            headers.push({
+              name: Buffer.from('content-type'),
+              value: Buffer.from('application/json')
+            });
+          }
+
           if (options.headers) {
             for (const [key, value] of Object.entries(options.headers)) {
               headers.push({
@@ -120,7 +132,7 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
           if (hasBody && streamId !== null) {
             const bodyBuffer = typeof options.body === 'string'
               ? Buffer.from(options.body)
-              : options.body!;
+              : Buffer.from(JSON.stringify(options.body));
 
             const bodyResult = h3Result.sendBody(conn, streamId, bodyBuffer, true);
             if (isNapiError(bodyResult)) {
@@ -174,12 +186,16 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
                 }
               }
 
-              resolve({
+              const response: FetchResponse = {
                 status: statusCode || 'unknown',
                 statusText: getStatusText(statusCode),
                 headers: headersMap,
                 body: responseBody,
-              });
+                text: () => responseBody.toString('utf-8'),
+                json: <T = any>() => JSON.parse(responseBody.toString('utf-8')) as T,
+              };
+
+              resolve(response);
               return;
             } else if (event.eventType === 'reset' || event.eventType === 'goaway') {
               cleanup();
@@ -252,13 +268,7 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
         }
 
         if (conn && !conn.isClosed()) {
-          const closeResult = conn.close(false, 0, Buffer.from('done'));
-          if (isNapiError(closeResult)) {
-            // normal during close
-            if (!closeResult.message.includes('No more work to do')) {
-              console.error('Error closing connection:', closeResult.message);
-            }
-          }
+          conn.close(false, 0, Buffer.from('done'));
           sendPackets();
         }
 
@@ -276,7 +286,7 @@ export async function fetch(url: string, options: FetchOptions = {}): Promise<Fe
       const config = new Config(PROTOCOL_VERSION);
       config.verifyPeer(false);
 
-      const alpn = nwepAndH3Alpn();
+      const alpn = nwepAlpn();
       if (isNapiError(alpn)) {
         throw new Error(`Failed to get NWEP ALPN: ${alpn.message}`);
       }

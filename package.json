@@ -1,14 +1,12 @@
 {
   "name": "@webprotocol/fetch",
-  "version": "0.1.0",
-  "description": "",
+  "version": "0.2.0",
+  "description": "fetch client for web:// protocol (NWEP)",
   "main": "index.js",
   "scripts": {
-    "build": "tsc",
-    "example": "npm run build && node example.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "tsc"
   },
-  "keywords": [],
+  "keywords": ["web", "nwep", "fetch", "quic", "http3"],
   "author": "",
   "license": "ISC",
   "type": "module",

@@ -1,11 +1,11 @@
 import dgram from 'node:dgram';
 import { URL } from 'node:url';
-import { Config, Connection, H3Config, H3Connection, generateCid, nwepAndH3Alpn, PROTOCOL_VERSION, } from '@webprotocol/nwep';
+import { Config, Connection, H3Config, H3Connection, generateCid, nwepAlpn, PROTOCOL_VERSION, } from '@webprotocol/nwep';
 import { isNapiError } from './napi-helpers.js';
 export async function fetch(url, options = {}) {
     const parsedUrl = new URL(url);
     if (parsedUrl.protocol !== 'web:') {
-        throw new Error(`Unsupported protocol: ${parsedUrl.protocol}. Use web://`);
+        throw new Error(`only web:// protocol is supported (got ${parsedUrl.protocol})`);
     }
     let host = parsedUrl.hostname;
     if (host.startsWith('[') && host.endsWith(']')) {
@@ -13,7 +13,7 @@ export async function fetch(url, options = {}) {
     }
     const port = parsedUrl.port ? parseInt(parsedUrl.port) : 443;
     const path = parsedUrl.pathname + parsedUrl.search;
-    const method = options.method || 'GET';
+    const method = options.method || 'READ';
     const isIPv6 = host.includes(':');
     const socketType = isIPv6 ? 'udp6' : 'udp4';
     const socket = dgram.createSocket(socketType);
@@ -59,6 +59,13 @@ export async function fetch(url, options = {}) {
                         { name: Buffer.from(':path'), value: Buffer.from(path) },
                         { name: Buffer.from('user-agent'), value: Buffer.from('webfetch/1.0') },
                     ];
+                    // auto set content-type for json bodies
+                    if (options.body && typeof options.body === 'object' && !options.headers?.['content-type']) {
+                        headers.push({
+                            name: Buffer.from('content-type'),
+                            value: Buffer.from('application/json')
+                        });
+                    }
                     if (options.headers) {
                         for (const [key, value] of Object.entries(options.headers)) {
                             headers.push({
@@ -78,7 +85,7 @@ export async function fetch(url, options = {}) {
                     if (hasBody && streamId !== null) {
                         const bodyBuffer = typeof options.body === 'string'
                             ? Buffer.from(options.body)
-                            : options.body;
+                            : Buffer.from(JSON.stringify(options.body));
                         const bodyResult = h3Result.sendBody(conn, streamId, bodyBuffer, true);
                         if (isNapiError(bodyResult)) {
                             cleanup();
@@ -123,12 +130,15 @@ export async function fetch(url, options = {}) {
                                     headersMap.set(name, header.value.toString());
                                 }
                             }
-                            resolve({
+                            const response = {
                                 status: statusCode || 'unknown',
                                 statusText: getStatusText(statusCode),
                                 headers: headersMap,
                                 body: responseBody,
-                            });
+                                text: () => responseBody.toString('utf-8'),
+                                json: () => JSON.parse(responseBody.toString('utf-8')),
+                            };
+                            resolve(response);
                             return;
                         }
                         else if (event.eventType === 'reset' || event.eventType === 'goaway') {
@@ -191,13 +201,7 @@ export async function fetch(url, options = {}) {
                     requestTimeout = null;
                 }
                 if (conn && !conn.isClosed()) {
-                    const closeResult = conn.close(false, 0, Buffer.from('done'));
-                    if (isNapiError(closeResult)) {
-                        // normal during close
-                        if (!closeResult.message.includes('No more work to do')) {
-                            console.error('Error closing connection:', closeResult.message);
-                        }
-                    }
+                    conn.close(false, 0, Buffer.from('done'));
                     sendPackets();
                 }
                 try {
@@ -214,7 +218,7 @@ export async function fetch(url, options = {}) {
         try {
             const config = new Config(PROTOCOL_VERSION);
             config.verifyPeer(false);
-            const alpn = nwepAndH3Alpn();
+            const alpn = nwepAlpn();
             if (isNapiError(alpn)) {
                 throw new Error(`Failed to get NWEP ALPN: ${alpn.message}`);
             }
